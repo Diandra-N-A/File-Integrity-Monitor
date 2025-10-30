@@ -144,11 +144,21 @@ def create_baseline():
     log_activity("INFO", f"Baseline created for {len(current_files)} files")
     return len(current_files)
 
+def reset_logs():
+    """Menghapus semua log dan memulai dari awal"""
+    try:
+        with open(LOG_FILE, 'w', encoding='utf-8') as f:
+            f.write("")
+        log_activity("INFO", "Log system has been reset")
+        return True
+    except Exception as e:
+        return False
+
 # ===== STREAMLIT UI =====
 st.set_page_config(page_title="File Integrity Monitor", page_icon="🔒", layout="wide")
 
-st.title("🔒 Sistem Deteksi Integritas File")
-st.markdown("**Monitoring & Keamanan File Real-time**")
+st.title("🔒 SussyFile")
+st.markdown("**Monitoring & Keamanan Integritas File Real-time**")
 
 # Sidebar
 with st.sidebar:
@@ -165,6 +175,14 @@ with st.sidebar:
         st.success(f"✅ Baseline dibuat untuk {count} file")
         time.sleep(1)
         st.rerun()
+    
+    if st.button("🗑️ Reset Log", use_container_width=True):
+        if reset_logs():
+            st.success("✅ Log berhasil direset")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error("❌ Gagal mereset log")
     
     st.divider()
     
@@ -267,7 +285,16 @@ with tab3:
     st.header("📜 Log Aktivitas")
     
     if stats['recent_logs']:
-        st.subheader("🕒 10 Log Terakhir")
+        # Tombol reset di atas
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.subheader("🕒 10 Log Terakhir")
+        with col2:
+            if st.button("🗑️ Hapus Semua Log", type="secondary"):
+                if reset_logs():
+                    st.success("✅ Log berhasil dihapus")
+                    time.sleep(1)
+                    st.rerun()
         
         for log in stats['recent_logs']:
             log = log.strip()
@@ -290,6 +317,7 @@ with tab3:
                 )
     else:
         st.info("📭 Belum ada log aktivitas")
+        st.caption("Log akan muncul setelah Anda melakukan scan atau membuat baseline")
 
 with tab4:
     st.header("📖 Panduan Penggunaan")
@@ -351,4 +379,4 @@ with tab4:
 
 # Footer
 st.divider()
-st.caption("🔒 File Integrity Monitoring System | Dibuat dengan ❤️ menggunakan Streamlit")
+st.caption("Dibuat oleh Andra (5027231004), Faqih (5027231023), Furqon (5027231024), Gallant (5027231037) | Dibuat dengan ❤️ menggunakan Streamlit")
