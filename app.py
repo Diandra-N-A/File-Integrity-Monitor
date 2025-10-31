@@ -379,4 +379,4 @@ with tab4:
 
 # Footer
 st.divider()
-st.caption("Dibuat oleh Andra (5027231004), Faqih (5027231023), Furqon (5027231024), Gallant (5027231037) | Dibuat dengan ❤️ menggunakan Streamlit")
+st.caption("Dibuat oleh Andra (5027231004), Faqih (5027231023), Furqon (5027231024), Haidar (5027231029), dan Gallant (5027231037) | Dibuat dengan ❤️ menggunakan Streamlit")
