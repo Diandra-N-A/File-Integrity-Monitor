@@ -6,6 +6,7 @@
 | Diandra Naufal Abror | 5027231004 |
 | Muhammad Faqih Husain | 5027231023 |
 | Furqon Aryadana | 5027231024 |
+| Haidar Rafi Aqyla | 5027231029 |
 | Gallant Damas Hayuaji | 5027231037 |
 
 ## Direktori Project
