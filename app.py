@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 import time
 import pandas as pd
+import threading
 
 # Konfigurasi
 SECURE_FOLDER = "./secure_files"
@@ -55,56 +56,68 @@ def save_hash_db(hash_db):
         json.dump(hash_db, f, indent=2)
 
 def scan_files():
-    """Memindai semua file di folder secure_files"""
+    """Memindai semua file di folder secure_files secara rekursif"""
     current_files = {}
     if os.path.exists(SECURE_FOLDER):
-        for filename in os.listdir(SECURE_FOLDER):
-            filepath = os.path.join(SECURE_FOLDER, filename)
-            if os.path.isfile(filepath):
+        for root, dirs, files in os.walk(SECURE_FOLDER):
+            for filename in files:
+                filepath = os.path.join(root, filename)
+                relative_path = os.path.relpath(filepath, SECURE_FOLDER)
                 file_hash = calculate_hash(filepath)
                 if file_hash:
-                    current_files[filename] = {
+                    current_files[relative_path] = {
                         'hash': file_hash,
                         'size': os.path.getsize(filepath),
-                        'modified': datetime.fromtimestamp(os.path.getmtime(filepath)).strftime("%Y-%m-%d %H:%M:%S")
+                        'modified': datetime.fromtimestamp(os.path.getmtime(filepath)).strftime("%Y-%m-%d %H:%M:%S"),
+                        'path': os.path.dirname(relative_path) if os.path.dirname(relative_path) else "/"
                     }
     return current_files
 
 def check_integrity():
     """Memeriksa integritas file dan mendeteksi perubahan"""
-    hash_db = load_hash_db()
-    current_files = scan_files()
-    
-    results = {
-        'safe': [],
-        'modified': [],
-        'deleted': [],
-        'new': []
-    }
-    
-    # Cek file yang ada sekarang
-    for filename, info in current_files.items():
-        if filename in hash_db:
-            if hash_db[filename]['hash'] == info['hash']:
-                results['safe'].append(filename)
-                log_activity("INFO", "File verified OK", filename)
+    try:
+        hash_db = load_hash_db()
+        current_files = scan_files()
+        
+        results = {
+            'safe': [],
+            'modified': [],
+            'deleted': [],
+            'new': []
+        }
+        
+        # Cek file yang ada sekarang
+        for filename, info in current_files.items():
+            if filename in hash_db:
+                if hash_db[filename]['hash'] == info['hash']:
+                    # File unchanged; don't spam logs on every scan
+                    results['safe'].append(filename)
+                else:
+                    results['modified'].append(filename)
+                    log_activity("WARNING", "File integrity failed! Hash mismatch detected", filename)
             else:
-                results['modified'].append(filename)
-                log_activity("WARNING", "File integrity failed! Hash mismatch detected", filename)
-        else:
-            results['new'].append(filename)
-            log_activity("ALERT", "Unknown file detected (new file added)", filename)
-    
-    # Cek file yang hilang
-    for filename in hash_db:
-        if filename not in current_files:
-            results['deleted'].append(filename)
-            log_activity("ALERT", "File has been deleted", filename)
-    
-    # Update database dengan file saat ini
-    save_hash_db(current_files)
-    
-    return results
+                results['new'].append(filename)
+                log_activity("ALERT", "Unknown file detected (new file added)", filename)
+        
+        # Cek file yang hilang
+        for filename in hash_db:
+            if filename not in current_files:
+                results['deleted'].append(filename)
+                log_activity("ALERT", "File has been deleted", filename)
+        
+    # NOTE: do NOT overwrite the baseline on every scan.
+    # Baseline should only be updated when the user explicitly creates/updates it.
+    # save_hash_db(current_files)
+        
+        return results
+    except Exception as e:
+        st.error(f"Error during integrity check: {str(e)}")
+        return {
+            'safe': [],
+            'modified': [],
+            'deleted': [],
+            'new': []
+        }
 
 def parse_logs():
     """Membaca dan menganalisis file log"""
@@ -154,21 +167,32 @@ def reset_logs():
     except Exception as e:
         return False
 
+
+
 # ===== STREAMLIT UI =====
 st.set_page_config(page_title="File Integrity Monitor", page_icon="🔒", layout="wide")
 
 st.title("🔒 SussyFile")
 st.markdown("**Monitoring & Keamanan Integritas File Real-time**")
 
+# Auto-refresh setup: prefer `streamlit-autorefresh` when available
+try:
+    from streamlit_autorefresh import st_autorefresh
+    # interval in milliseconds (500ms)
+    _ = st_autorefresh(interval=500, key="autorefresh")
+except Exception:
+    # Fallback: use a lightweight client-side meta refresh (1s) if autorefresh not installed
+    # Meta refresh is less ideal but avoids server-side busy loops.
+    st.markdown("<meta http-equiv='refresh' content='1'>", unsafe_allow_html=True)
+
+# Run an integrity check on every app run (autorefresh will reload the page)
+current_results = check_integrity()
+st.session_state['scan_results'] = current_results
+st.session_state['last_scan'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Kontrol Panel")
-    
-    if st.button("🔍 Scan Sekarang", type="primary", use_container_width=True):
-        with st.spinner("Memindai file..."):
-            results = check_integrity()
-            st.session_state['scan_results'] = results
-            st.session_state['last_scan'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     if st.button("📝 Buat Baseline Baru", use_container_width=True):
         count = create_baseline()
@@ -192,9 +216,6 @@ with st.sidebar:
         st.metric("File Terdaftar", len(hash_db))
     else:
         st.warning("⚠️ Belum ada baseline")
-    
-    if 'last_scan' in st.session_state:
-        st.info(f"🕒 Scan terakhir:\n{st.session_state['last_scan']}")
 
 # Tab utama
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📁 File Manager", "📜 Log Activity", "📖 Panduan"])
@@ -202,55 +223,60 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📁 File Manager", "📜 L
 with tab1:
     st.header("Dashboard Monitoring")
     
-    # Statistik
-    stats = parse_logs()
+    # Create containers for metrics
+    metrics_container = st.empty()
     
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("✅ Log INFO", stats['info'])
-    with col2:
-        st.metric("⚠️ Log WARNING", stats['warning'])
-    with col3:
-        st.metric("🚨 Log ALERT", stats['alert'])
-    with col4:
-        st.metric("📝 Total Log", stats['total_logs'])
+    # Update metrics
+    with metrics_container.container():
+        stats = parse_logs()
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("✅ Log INFO", stats['info'])
+        with col2:
+            st.metric("⚠️ Log WARNING", stats['warning'])
+        with col3:
+            st.metric("🚨 Log ALERT", stats['alert'])
+        with col4:
+            st.metric("📝 Total Log", stats['total_logs'])
     
     # Hasil scan terakhir
-    if 'scan_results' in st.session_state:
-        st.divider()
-        st.subheader("🔍 Hasil Scan Terakhir")
+    st.divider()
+    st.subheader("🔍 Hasil Scan Terakhir")
+    
+    # Selalu lakukan scan otomatis
+    if 'scan_results' not in st.session_state:
+        results = check_integrity()
+        st.session_state['scan_results'] = results
+    
+    results = st.session_state['scan_results']
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.success(f"**✅ File Aman:** {len(results['safe'])}")
+        if results['safe']:
+            with st.expander("Lihat detail"):
+                for f in results['safe']:
+                    st.text(f"• {f}")
         
-        results = st.session_state['scan_results']
+        st.info(f"**➕ File Baru:** {len(results['new'])}")
+        if results['new']:
+            with st.expander("Lihat detail"):
+                for f in results['new']:
+                    st.text(f"• {f}")
+    
+    with col2:
+        st.warning(f"**⚠️ File Diubah:** {len(results['modified'])}")
+        if results['modified']:
+            with st.expander("Lihat detail"):
+                for f in results['modified']:
+                    st.text(f"• {f}")
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.success(f"**✅ File Aman:** {len(results['safe'])}")
-            if results['safe']:
-                with st.expander("Lihat detail"):
-                    for f in results['safe']:
-                        st.text(f"• {f}")
-            
-            st.info(f"**➕ File Baru:** {len(results['new'])}")
-            if results['new']:
-                with st.expander("Lihat detail"):
-                    for f in results['new']:
-                        st.text(f"• {f}")
-        
-        with col2:
-            st.warning(f"**⚠️ File Diubah:** {len(results['modified'])}")
-            if results['modified']:
-                with st.expander("Lihat detail"):
-                    for f in results['modified']:
-                        st.text(f"• {f}")
-            
-            st.error(f"**🗑️ File Dihapus:** {len(results['deleted'])}")
-            if results['deleted']:
-                with st.expander("Lihat detail"):
-                    for f in results['deleted']:
-                        st.text(f"• {f}")
-    else:
-        st.info("👆 Klik 'Scan Sekarang' untuk memulai pemantauan")
+        st.error(f"**🗑️ File Dihapus:** {len(results['deleted'])}")
+        if results['deleted']:
+            with st.expander("Lihat detail"):
+                for f in results['deleted']:
+                    st.text(f"• {f}")
     
     # Anomali terakhir
     if stats['last_anomaly']:
@@ -260,26 +286,32 @@ with tab1:
 with tab2:
     st.header("📁 Manajemen File")
     
-    current_files = scan_files()
+    # Create container for file manager
+    file_manager_container = st.empty()
     
-    if current_files:
-        st.success(f"Ditemukan {len(current_files)} file")
-        
-        # Buat tabel
-        data = []
-        for filename, info in current_files.items():
-            data.append({
-                'Nama File': filename,
-                'Ukuran (bytes)': info['size'],
-                'Terakhir Diubah': info['modified'],
-                'Hash (8 digit)': info['hash'][:8] + "..."
-            })
-        
-        df = pd.DataFrame(data)
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.warning("📭 Belum ada file di folder secure_files/")
-        st.info("💡 **Tip:** Tambahkan file ke folder `secure_files/` lalu klik 'Scan Sekarang'")
+    # Update file manager
+    with file_manager_container.container():
+        current_files = scan_files()
+        total_files = len(current_files)
+        if total_files > 0:
+            st.success(f"Ditemukan {total_files} file")
+
+            # Buat tabel
+            data = []
+            for filename, info in current_files.items():
+                data.append({
+                    'Nama File': filename,
+                    'Path': info['path'],
+                    'Ukuran (bytes)': info['size'],
+                    'Terakhir Diubah': info['modified'],
+                    'Hash (8 digit)': info['hash'][:8] + "..."
+                })
+
+            df = pd.DataFrame(data)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.warning("📭 Belum ada file di folder secure_files/")
+            st.info("💡 **Tip:** Tambahkan file ke folder `secure_files/` lalu klik 'Scan Sekarang'")
 
 with tab3:
     st.header("📜 Log Aktivitas")
